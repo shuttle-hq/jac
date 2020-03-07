@@ -437,9 +437,9 @@ enum LockGuardOp {
     Change
 }
 
-/// A `LockGuard` for some data of type `T` ina  given store
+/// A `LockGuard` for some data of type `T` in a  given `Store`
 ///
-/// `LockGuard` is similar to a Mutex TODO
+/// `LockGuard` is similar to a Mutex. You can mutate data while you hold the `LockGuard`.
 pub struct LockGuard<T> {
     store: Store,
     id: i64,
@@ -512,6 +512,8 @@ where
     }
 }
 
+/// Follows the entry pattern (like  std::collections::hash_map::Entry)
+/// Holds a key `K` to a value `V in the context of a `Store`
 pub struct StoreEntry<K, T> {
     store: Store,
     key: K,
@@ -573,7 +575,7 @@ where
         }
     }
 }
-
+/// The actual cached HashMap. Wraps around a `Store` and an `std::collection::HashMap`
 pub struct RHashMap<K, V> {
     prefix: Option<String>,
     store: Store,
