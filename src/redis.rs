@@ -192,8 +192,11 @@ lazy_static! {
     };
 }
 
+/// Connection parameters for redis.
 pub struct RedisOpt {
+    /// redis instance url (defaults to redis://localhost:6379)
     url: String,
+    /// redis password
     password: Option<String>
 }
 
@@ -204,11 +207,15 @@ impl RedisOpt {
             password: password.map(|p| p.to_string())
         }
     }
+    /// Get a client using the provided `url` & `password`
+    /// (This is usually used to get a `Store`)
     pub fn to_client(&self) -> Result<redis::Client> {
         let mut conn_info = self.url.clone().into_connection_info()?;
         conn_info.passwd = self.password.clone();
         Ok(redis::Client::open(conn_info)?)
     }
+
+    /// Get a `Store` with redis as the underlying
     pub fn build(self) -> Store {
         Store::new(&self)
     }
@@ -223,6 +230,7 @@ impl Default for RedisOpt {
     }
 }
 
+/// A store represents an underlying persistent store used to back **jac**
 #[derive(Clone)]
 pub struct Store(Arc<redis::Client>);
 
@@ -233,10 +241,15 @@ impl Default for Store {
 }
 
 impl Store {
+    /// Get a new `Store` using the `RedisOpt` options
+    ///
+    /// # Panics
+    /// if the redis configuration specified in `RedisOpt` is invalid
     pub fn new(opt: &RedisOpt) -> Self {
         Self(Arc::new(opt.to_client().expect("invalid redis config")))
     }
 
+    /// Supply a redis connection to the `Store`
     fn with_conn<F, U>(&self, f: F) -> Result<U>
     where
         F: FnOnce(redis::Connection) -> Result<U>,
@@ -256,7 +269,7 @@ impl Store {
 
     /// attempts to pull `key` in store. If `key` does not exist, errors out.
     /// If it does, generation is compared with existing. If gen > existing gen
-    /// then returns CachedValue::New otherwise CachedValue::NoChange
+    /// then returns `CachedValue::New` otherwise `CachedValue::NoChange`
     pub fn validate<K, T>(
         &self,
         key: K,
@@ -324,6 +337,7 @@ impl Store {
         })
     }
 
+    /// Get a key-value `StoreEntry` give a key `K`
     pub fn entry<K, T>(
         &self,
         at: K
@@ -331,6 +345,7 @@ impl Store {
     where
         K: ToRedisArgs + Clone
     {
+
         self.with_conn(|mut conn| {
             let seed = base64::encode(&rand::thread_rng().gen::<[u8; 32]>());
             let (generation, _): (String, u64) = ALLOC_SCRIPT
@@ -403,12 +418,19 @@ impl Store {
     }
 }
 
+/// A `LockGuard` operation.
+///
+/// `NoChange` if there wasnt a change after releasing the `LockGuard`
+/// `Change` if a change was made after releasing the `LockGuard`
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum LockGuardOp {
     NoChange,
     Change
 }
 
+/// A `LockGuard` for some data of type `T` in a  given `Store`
+///
+/// `LockGuard` is similar to a Mutex. You can mutate data while you hold the `LockGuard`.
 pub struct LockGuard<T> {
     store: Store,
     id: i64,
@@ -481,6 +503,8 @@ where
     }
 }
 
+/// Follows the entry pattern (like  std::collections::hash_map::Entry)
+/// Holds a key `K` to a value `V in the context of a `Store`
 pub struct StoreEntry<K, T> {
     store: Store,
     key: K,

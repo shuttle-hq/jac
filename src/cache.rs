@@ -3,7 +3,7 @@ use std::ops::Deref;
 use std::sync::{Mutex, RwLock, Arc};
 use std::time::{Duration, Instant};
 
-/// A wrapper around content returned as part of an invalidation
+/// A wrapper around content returned as part of an validation
 /// strategy.
 #[derive(Clone)]
 pub enum ContentUpdate<T> {
@@ -28,8 +28,10 @@ pub trait Validate: Sized {
     /// The type of the controlled content
     type Item;
 
+    /// The type of error for the validation strategy
     type Error: std::error::Error;
 
+    /// The type to be used as the version of the controlled content
     type Version;
 
     /// `validate` content at `version`. This should be quick to do and only rarely return
@@ -39,7 +41,7 @@ pub trait Validate: Sized {
         version: Self::Version
     ) -> Result<Validation<Self::Version, Self::Item>, Self::Error>;
 
-    /// get content with its current version
+    /// Get the latest `version` of content with it's current `version`
     fn refresh(&self) -> Result<(Self::Version, Option<Self::Item>), Self::Error>;
 
     /// applies a closure `f` to content of `self` before yielding new values
@@ -55,6 +57,7 @@ pub trait Validate: Sized {
         }
     }
 
+    /// returns the content wrapped in a `TimeToLive` object with the specified `ttl`
     fn time_to_live(self, ttl: Duration) -> TimeToLive<Self> {
         TimeToLive {
             inner: self,
@@ -76,22 +79,28 @@ pub trait Validate: Sized {
     }
 }
 
+/// a TTL wrapper around a validation strategy `S`
 pub struct TimeToLive<S: Validate> {
     inner: S,
     ttl: Duration,
     last: Mutex<Option<S::Version>>
 }
 
+/// a TTL validation strategy
 impl<S> Validate for TimeToLive<S>
 where
     S: Validate
 {
+    /// the type of the controlled content
     type Item = S::Item;
 
+    /// the error for the validation strategy
     type Error = S::Error;
 
+    /// the version of the validation strategy. Since it is a TTL validation strategy, the version is an instant.
     type Version = Instant;
 
+    /// `validate` the current `version` by comparing the time elapsed against the `ttl`.
     fn validate(
         &self,
         version: Self::Version
@@ -136,6 +145,8 @@ where
         }
     }
 
+    /// Get the latest version of content as dictated by the `inner` validation strategy
+    /// (even if the TTL has not elapsed).
     fn refresh(&self) -> Result<(Self::Version, Option<Self::Item>), Self::Error> {
         let mut last = self.last.lock().unwrap();
         let (version, item) = self.inner.refresh()?;
@@ -160,6 +171,8 @@ where
     type Item = O;
     type Error = T::Error;
     type Version = T::Version;
+
+    /// `validate` content at `version` using the `inner` invalidation strategy
     fn validate(
         &self,
         version: Self::Version
@@ -176,7 +189,7 @@ where
             }
         )
     }
-
+    /// gets the latest version of the content as dictated by the `inner` validation strategy
     fn refresh(&self) -> Result<(Self::Version, Option<Self::Item>), Self::Error> {
         let (version, value) = self.inner.refresh()?;
         Ok((version, value.map(|v| (self.closure)(v))))
@@ -208,6 +221,10 @@ impl<S: Validate> Clone for Cached<S> {
     }
 }
 
+/// Broadly there are 2 classes of Cache Error
+/// 1. Backend Error. For example if the underlying store is unreachable
+/// 2. Poison Error. `Content` is considered poisoned whenever a thread holding the `LockGuard`
+/// for that `Content` panics.
 #[derive(Clone, Debug)]
 pub enum CacheError<E> {
     Backend(E),
@@ -243,6 +260,7 @@ where
     S: Validate,
     S::Version: Clone
 {
+    /// Brings the cached content to the most recent version
     fn validate(&self) -> Result<(), CacheError<S::Error>> {
         let version = (*self.version.read()?).clone();
 

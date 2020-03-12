@@ -2,6 +2,10 @@
 
 # jac 
 
+[![Released API docs](https://docs.rs/jac/badge.svg)](https://docs.rs/jac)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
+
 > **j**ust **a**nother **c**ache.
 
 **jac** is a distributed key-value store backed by Redis. It has a few really nice properties.
