@@ -67,7 +67,7 @@ pub trait Validate: Sized {
     }
 
     /// transform the validation strategy into a cached object
-    fn into_cached(self) -> Result<Cached<Self>, Self::Error> {
+    fn into_cached(self) -> Result<Cached<Self, Self::Version, Self::Item>, Self::Error> {
         let (version, data) = self.refresh()?;
         Ok(
             Cached {
@@ -205,13 +205,13 @@ impl<C> Clone for Content<C> {
 }
 
 /// A wrapper around a validation strategy that caches its content
-pub struct Cached<S: Validate> {
+pub struct Cached<S, V, I> {
     strategy: Arc<S>,
-    version: Arc<RwLock<S::Version>>,
-    content: Content<S::Item>,
+    version: Arc<RwLock<V>>,
+    content: Content<I>,
 }
 
-impl<S: Validate> Clone for Cached<S> {
+impl<S, V, I> Clone for Cached<S, V, I> {
     fn clone(&self) -> Self {
         Self {
             strategy: self.strategy.clone(),
@@ -255,10 +255,10 @@ where
 
 impl<E> std::error::Error for CacheError<E> where E: std::error::Error {}
 
-impl<S> Cached<S>
+impl<S, V, I> Cached<S, V, I>
 where
-    S: Validate,
-    S::Version: Clone
+    S: Validate<Item = I, Version = V>,
+    V: Clone
 {
     /// Brings the cached content to the most recent version
     fn validate(&self) -> Result<(), CacheError<S::Error>> {
@@ -299,10 +299,10 @@ pub trait Read {
         F: FnOnce(&Self::Item) -> O;
 }
 
-impl<S> Read for Cached<S>
+impl<S, V, I> Read for Cached<S, V, I>
 where
-    S: Validate,
-    S::Version: Clone
+    S: Validate<Item = I, Version = V>,
+    V: Clone
 {
     type Item = S::Item;
 
@@ -367,9 +367,9 @@ where
     }
 }
 
-impl<I, S> Write<I> for Cached<S>
+impl<I, S, V, II> Write<I> for Cached<S, V, II>
 where
-    S: Write<I> + Validate
+    S: Write<I> + Validate<Item = II, Version = V>
 {
     type Error = <S as Write<I>>::Error;
 
@@ -387,9 +387,10 @@ where
     }
 }
 
-impl<S> Validate for Cached<S>
+/// FIXME: improve
+impl<S, V, I> Validate for Cached<S, V, I>
 where
-    S: Validate
+    S: Validate<Item = I, Version = V>
 {
     type Item = S::Item;
     type Error = S::Error;

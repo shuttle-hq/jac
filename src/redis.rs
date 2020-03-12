@@ -258,12 +258,12 @@ impl Store {
         f(conn)
     }
 
-    pub fn list<V: FromStr, I: FromIterator<V>>(&self, pattern: &str) -> Result<I>
+    pub fn list<RV: FromRedisValue>(&self, pattern: &str) -> Result<impl Iterator<Item = RV>>
     {
         self.with_conn(|mut conn| {
-            conn.scan_match(pattern)?
-                .map(|k: String| k.parse().map_err(|_| ParseError(k).into()))
-                .collect()
+            let buf: Vec<_> = conn.scan_match(pattern)?
+                .collect();
+            Ok(buf.into_iter())
         })
     }
 
@@ -567,7 +567,7 @@ where
     }
 }
 
-pub type CachedEntry<K, V> = Cached<StoreEntry<K, V>>;
+pub type CachedEntry<K, V> = Cached<StoreEntry<K, V>, u64, V>;
 
 #[cfg(test)]
 pub mod tests {
