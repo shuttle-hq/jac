@@ -254,15 +254,6 @@ impl Store {
         })
     }
 
-    pub fn mount<I, K, V>(&self, at: I) -> CachedStore<K, V>
-    where
-        K: ToRedisArgs + Eq + Hash + Clone,
-        for<'a> V: Deserialize<'a> + Serialize,
-        I: AsRef<str>
-    {
-        CachedStore::<K, V>::new_with_prefix(self.clone(), at.as_ref())
-    }
-
     /// attempts to pull `key` in store. If `key` does not exist, errors out.
     /// If it does, generation is compared with existing. If gen > existing gen
     /// then returns CachedValue::New otherwise CachedValue::NoChange
@@ -552,75 +543,7 @@ where
     }
 }
 
-pub struct RHashMap<K, V> {
-    prefix: Option<String>,
-    store: Store,
-    inner: Arc<Mutex<HashMap<K, V>>>
-}
-
-pub struct Prefixed<'a, K> {
-    prefix: &'a Option<String>,
-    key: &'a K
-}
-
-impl<'a, K> ToRedisArgs for Prefixed<'a, K>
-where
-    K: ToRedisArgs
-{
-    fn write_redis_args<W: ?Sized>(&self, out: &mut W)
-    where
-        W: redis::RedisWrite
-    {
-        match self.prefix {
-            Some(prefix) => prefix.write_redis_args(out),
-            _ => ()
-        };
-        self.key.write_redis_args(out);
-    }
-}
-
 pub type CachedEntry<K, V> = Cached<StoreEntry<K, V>>;
-
-impl<K, V> RHashMap<K, CachedEntry<K, V>>
-where
-    K: ToRedisArgs + Eq + Hash + Clone,
-    for<'a> V: Deserialize<'a> + Serialize
-{
-    pub fn new(store: Store) -> Self {
-        Self {
-            prefix: None,
-            store: store,
-            inner: Arc::new(Mutex::new(HashMap::new()))
-        }
-    }
-
-    pub fn new_with_prefix(store: Store, prefix: &str) -> Self {
-        let mut out = Self::new(store);
-        out.prefix = Some(prefix.to_owned());
-        out
-    }
-
-    fn with_prefix<'a>(&'a self, k: &'a K) -> Prefixed<'a, K> {
-        Prefixed {
-            prefix: &self.prefix,
-            key: k
-        }
-    }
-
-    pub fn entry(&self, k: &K) -> std::result::Result<CachedEntry<K, V>, CacheError<Error>> {
-        let mut inner = self.inner.lock()?;
-        match inner.get(k) {
-            Some(ce) => Ok((*ce).clone()),
-            None => {
-                let entry: CachedEntry<K, V> = self.store.entry(k.clone())?.into_cached()?;
-                inner.insert(k.clone(), entry.clone());
-                Ok(entry)
-            }   
-        }
-    }
-}
-
-pub type CachedStore<K, V> = RHashMap<K, CachedEntry<K, V>>;
 
 #[cfg(test)]
 pub mod tests {
