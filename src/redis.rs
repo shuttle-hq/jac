@@ -15,7 +15,7 @@ use rand::Rng;
 
 use derive_more::From;
 
-use crate::cache::{Cache, CacheError, Validation, Validate, Write, OwnedIntent, ContentUpdate, Cached};
+use crate::cache::{Read, CacheError, Validation, Validate, Write, OwnedIntent, ContentUpdate, Cached};
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -654,7 +654,7 @@ pub mod tests {
         let store = mk_store();
         let key = mk_key();
 
-        let entry: Cached<_> = store.entry::<_, TestModel>(&key)
+        let entry = store.entry::<_, TestModel>(&key)
             .unwrap()
             .map(|model| model.a_hash_map.len())
             .into_cached()
@@ -677,7 +677,7 @@ pub mod tests {
     fn locking_twice_not_allowed() {
         let store = mk_store();
         let key = mk_key();
-        let entry: Cached<_> = store.entry::<_, TestModel>(&key)
+        let entry = store.entry::<_, TestModel>(&key)
             .unwrap()
             .into_cached()
             .unwrap();

@@ -2,7 +2,7 @@
 
 pub mod cache;
 pub use cache::{
-    Cache,
+    Read,
     Write,
     OwnedIntent,
     CacheError,

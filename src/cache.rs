@@ -28,7 +28,7 @@ pub trait Validate: Sized {
     /// The type of the controlled content
     type Item;
 
-    type Error;
+    type Error: std::error::Error;
 
     type Version;
 
@@ -64,11 +64,15 @@ pub trait Validate: Sized {
     }
 
     /// transform the validation strategy into a cached object
-    fn into_cached<C>(self) -> Result<C, Self::Error>
-    where
-        C: FromValidate<Strategy = Self>
-    {
-        C::from_validate(self)
+    fn into_cached(self) -> Result<Cached<Self>, Self::Error> {
+        let (version, data) = self.refresh()?;
+        Ok(
+            Cached {
+                strategy: Arc::new(self),
+                version: Arc::new(RwLock::new(version)),
+                content: Content(Arc::new(RwLock::new(data)))
+            }
+        )
     }
 }
 
@@ -98,7 +102,10 @@ where
 
             match version {
                 Some(version) => {
-                    let Validation { version, update } = self.inner.validate(version)?;
+                    let Validation {
+                        version,
+                        update
+                    } = self.inner.validate(version)?;
 
                     *last = Some(version);
 
@@ -176,12 +183,6 @@ where
     }
 }
 
-
-pub trait FromValidate: Sized {
-    type Strategy: Validate;
-    fn from_validate(s: Self::Strategy) -> Result<Self, <Self::Strategy as Validate>::Error>;
-}
-
 pub struct Content<C>(Arc<RwLock<Option<C>>>);
 
 impl<C> Clone for Content<C> {
@@ -235,21 +236,6 @@ where
     }
 }
 
-impl<S> FromValidate for Cached<S>
-where
-    S: Validate
-{
-    type Strategy = S;
-    fn from_validate(s: S) -> Result<Self, S::Error> {
-        let (version, data) = s.refresh()?;
-        Ok(Self {
-            strategy: Arc::new(s),
-            version: Arc::new(RwLock::new(version)),
-            content: Content(Arc::new(RwLock::new(data)))
-        })
-    }
-}
-
 impl<E> std::error::Error for CacheError<E> where E: std::error::Error {}
 
 impl<S> Cached<S>
@@ -262,7 +248,7 @@ where
 
         let res = self.strategy.validate(version)
             .map_err(|e| CacheError::Backend(e))?;
-
+        
         let version = res.version;
 
         match res.update {
@@ -285,17 +271,17 @@ where
     }
 }
 
-pub trait Cache {
+pub trait Read {
     type Item;
 
-    type Error;
+    type Error: std::error::Error;
 
     fn try_read_with<O, F>(&self, f: F) -> Result<Option<O>, CacheError<Self::Error>>
     where
         F: FnOnce(&Self::Item) -> O;
 }
 
-impl<S> Cache for Cached<S>
+impl<S> Read for Cached<S>
 where
     S: Validate,
     S::Version: Clone
@@ -383,6 +369,26 @@ where
     }
 }
 
+impl<S> Validate for Cached<S>
+where
+    S: Validate
+{
+    type Item = S::Item;
+    type Error = S::Error;
+    type Version = S::Version;
+
+    fn validate(
+        &self,
+        version: Self::Version
+    ) -> Result<Validation<Self::Version, Self::Item>, Self::Error> {
+        self.strategy.validate(version)
+    }
+
+    fn refresh(&self) -> Result<(Self::Version, Option<Self::Item>), Self::Error> {
+        self.strategy.refresh()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,7 +433,7 @@ mod tests {
     fn time_to_live() {
         let constant = Constant::new(0, 0);
         let num_hits = constant.num_hits.clone();
-        let cached: Cached<_> = constant
+        let cached = constant
             .map(|value| value + 1)
             .time_to_live(Duration::from_millis(5))
             .into_cached()
