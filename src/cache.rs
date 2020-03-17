@@ -321,7 +321,12 @@ where
     }
 }
 
-pub trait OwnedIntent<T> {
+use std::ops::DerefMut;
+
+pub trait OwnedIntent<T>
+where
+    Self: Deref<Target = Option<T>> + DerefMut
+{
     type Op;
     fn apply(self) -> Self::Op;
     fn discard(self) -> Self::Op;
