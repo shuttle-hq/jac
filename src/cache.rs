@@ -2,6 +2,8 @@ use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Mutex, RwLock, Arc};
 use std::time::{Duration, Instant};
+use std::ops::DerefMut;
+use std::sync::RwLockReadGuard;
 
 /// A wrapper around content returned as part of an validation
 /// strategy.
@@ -67,13 +69,12 @@ pub trait Validate: Sized {
     }
 
     /// transform the validation strategy into a cached object
-    fn into_cached(self) -> Result<Cached<Self, Self::Version, Self::Item>, Self::Error> {
+    fn into_cached(self) -> Result<Cached<Self>, Self::Error> {
         let (version, data) = self.refresh()?;
         Ok(
             Cached {
-                strategy: Arc::new(self),
-                version: Arc::new(RwLock::new(version)),
-                content: Content(Arc::new(RwLock::new(data)))
+                strategy: self,
+                content: Arc::new(RwLock::new(Content { version, data }))
             }
         )
     }
@@ -196,97 +197,18 @@ where
     }
 }
 
-pub struct Content<C>(Arc<RwLock<Option<C>>>);
-
-impl<C> Clone for Content<C> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
+pub struct Content<S>
+where
+    S: Validate
+{
+    version: S::Version,
+    data: Option<S::Item>
 }
 
 /// A wrapper around a validation strategy that caches its content
-pub struct Cached<S, V, I> {
-    strategy: Arc<S>,
-    version: Arc<RwLock<V>>,
-    content: Content<I>,
-}
-
-impl<S, V, I> Clone for Cached<S, V, I> {
-    fn clone(&self) -> Self {
-        Self {
-            strategy: self.strategy.clone(),
-            version: self.version.clone(),
-            content: self.content.clone()
-        }
-    }
-}
-
-/// Broadly there are 2 classes of Cache Error
-/// 1. Backend Error. For example if the underlying store is unreachable
-/// 2. Poison Error. `Content` is considered poisoned whenever a thread holding the `LockGuard`
-/// for that `Content` panics.
-#[derive(Clone, Debug)]
-pub enum CacheError<E> {
-    Backend(E),
-    Poisoned
-}
-
-impl<T, E> From<std::sync::PoisonError<T>> for CacheError<E> {
-    fn from(pe: std::sync::PoisonError<T>) -> Self {
-        Self::Poisoned
-    }
-}
-
-impl<E> std::fmt::Display for CacheError<E>
-where
-    E: std::error::Error
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Self::Backend(e) => {
-                write!(f, "backend: {}", e)
-            },
-            Poisoned => {
-                write!(f, "poisoned")
-            }
-        }
-    }
-}
-
-impl<E> std::error::Error for CacheError<E> where E: std::error::Error {}
-
-impl<S, V, I> Cached<S, V, I>
-where
-    S: Validate<Item = I, Version = V>,
-    V: Clone
-{
-    /// Brings the cached content to the most recent version
-    fn validate(&self) -> Result<(), CacheError<S::Error>> {
-        let version = (*self.version.read()?).clone();
-
-        let res = self.strategy.validate(version)
-            .map_err(|e| CacheError::Backend(e))?;
-        
-        let version = res.version;
-
-        match res.update {
-            ContentUpdate::Unchanged => {},
-            ContentUpdate::Removed => {
-                let mut c_w = self.content.0.write()?;
-                let mut v_w = self.version.write()?;
-                *v_w = version;
-                *c_w = None;
-            },
-            ContentUpdate::Value(v) => {
-                let mut c_w = self.content.0.write()?;
-                let mut v_w = self.version.write()?;
-                *v_w = version;
-                *c_w = Some(v);
-            }
-        }
-
-        Ok(())
-    }
+pub struct Cached<S: Validate> {
+    strategy: S,
+    content: Arc<RwLock<Content<S>>>,
 }
 
 pub trait Read {
@@ -294,62 +216,74 @@ pub trait Read {
 
     type Error: std::error::Error;
 
-    fn try_read_with<O, F>(&self, f: F) -> Result<Option<O>, CacheError<Self::Error>>
+    fn read_with<F, O>(&self, f: F) -> Result<Option<O>, Self::Error>
     where
         F: FnOnce(&Self::Item) -> O;
 }
 
-impl<S, V, I> Read for Cached<S, V, I>
+impl<S> Cached<S>
 where
-    S: Validate<Item = I, Version = V>,
-    V: Clone
+    S: Validate,
+    S::Version: Clone
+{
+    fn validate(&self) -> Result<RwLockReadGuard<'_, Content<S>>, S::Error> {
+        let res = {
+            let content = self.content.read().unwrap();
+            let res = self.strategy.validate(content.version.clone())?;
+            match &res.update {
+                ContentUpdate::Unchanged => return Ok(content),
+                _ => Ok(res)
+            }
+        }?; 
+
+        match res.update {
+            ContentUpdate::Unchanged => {},
+            ContentUpdate::Removed => {
+                let mut content = self.content.write().unwrap();
+                content.version = res.version;
+                content.data = None;
+            },
+            ContentUpdate::Value(v) => {
+                let mut content = self.content.write().unwrap();
+                content.version = res.version;
+                content.data = Some(v);
+            },
+        };
+
+        let content = self.content.read().unwrap();
+        Ok(content)
+    }
+}
+
+impl<S> Read for Cached<S>
+where
+    S: Validate,
+    S::Version: Clone
 {
     type Item = S::Item;
 
     type Error = S::Error;
 
-    fn try_read_with<O, F>(&self, f: F) -> Result<Option<O>, CacheError<S::Error>>
+    fn read_with<F, O>(&self, f: F) -> Result<Option<O>, S::Error>
     where
         F: FnOnce(&S::Item) -> O
     {
-        self.validate()?;
-        self.content
-            .0
-            .read()
-            .map_err(|_| CacheError::Poisoned)
-            .map(|o| o.as_ref().map(f))
+        Ok(self.validate()?.data.as_ref().map(|inner| f(inner)))
     }
 }
 
-use std::ops::DerefMut;
-
-pub trait OwnedIntent<T>
-where
-    Self: Deref<Target = Option<T>> + DerefMut
-{
-    type Op;
-    fn apply(self) -> Self::Op;
-    fn discard(self) -> Self::Op;
+pub struct WriteError<L, E> {
+    pub error: E,
+    pub lock: L
 }
 
 pub trait Write<T>: Sized {
     type Error;
+    type Lock: DerefMut<Target = Option<T>>;
 
-    type Intent: OwnedIntent<T>;
-
-    fn try_write(&self) -> Result<Self::Intent, Self::Error>;
-
-    fn apply(
-        &self,
-        op: <Self::Intent as OwnedIntent<T>>::Op
-    ) -> Result<(), Self::Error>;
-
-    fn try_write_with<F>(&self, f: F) -> Result<(), Self::Error>
-    where
-        F: FnOnce(Self::Intent) -> <Self::Intent as OwnedIntent<T>>::Op
-    {
-        self.try_write().map(f).and_then(|intent| self.apply(intent))
-    }
+    fn write(&self) -> Result<Self::Lock, Self::Error>;
+    fn push(&self, lock: Self::Lock) -> Result<(), WriteError<Self::Lock, Self::Error>>;
+    fn abort(&self, lock: Self::Lock) -> Result<(), WriteError<Self::Lock, Self::Error>>;
 }
 
 impl<T, I, F, O> Write<T> for ValidateMap<I, F, O>
@@ -358,44 +292,45 @@ where
 {
     type Error = I::Error;
 
-    type Intent = I::Intent;
+    type Lock = I::Lock;
 
-    fn try_write(&self) -> Result<Self::Intent, Self::Error> {
-        self.inner.try_write()
+    fn write(&self) -> Result<Self::Lock, Self::Error> {
+        self.inner.write()
     }
 
-    fn apply(
-        &self,
-        op: <Self::Intent as OwnedIntent<T>>::Op
-    ) -> Result<(), Self::Error> {
-        self.inner.apply(op)
+    fn push(&self, lock: Self::Lock) -> Result<(), WriteError<Self::Lock, Self::Error>> {
+        self.inner.push(lock)
+    }
+
+    fn abort(&self, lock: Self::Lock) -> Result<(), WriteError<Self::Lock, Self::Error>> {
+        self.inner.abort(lock)
     }
 }
 
-impl<I, S, V, II> Write<I> for Cached<S, V, II>
+impl<I, S> Write<I> for Cached<S>
 where
-    S: Write<I> + Validate<Item = II, Version = V>
+    S: Write<I> + Validate
 {
     type Error = <S as Write<I>>::Error;
 
-    type Intent = S::Intent;
+    type Lock = <S as Write<I>>::Lock;
 
-    fn try_write(&self) -> Result<Self::Intent, Self::Error> {
-        self.strategy.try_write()
+    fn write(&self) -> Result<Self::Lock, Self::Error> {
+        self.strategy.write()
     }
 
-    fn apply(
-        &self,
-        op: <Self::Intent as OwnedIntent<I>>::Op
-    ) -> Result<(), Self::Error> {
-        self.strategy.apply(op)
+    fn push(&self, lock: Self::Lock) -> Result<(), WriteError<Self::Lock, Self::Error>> {
+        self.strategy.push(lock)
+    }
+
+    fn abort(&self, lock: Self::Lock) -> Result<(), WriteError<Self::Lock, Self::Error>> {
+        self.strategy.abort(lock)
     }
 }
 
-/// FIXME: improve
-impl<S, V, I> Validate for Cached<S, V, I>
+impl<S> Validate for Cached<S>
 where
-    S: Validate<Item = I, Version = V>
+    S: Validate
 {
     type Item = S::Item;
     type Error = S::Error;
@@ -463,7 +398,7 @@ mod tests {
             .into_cached()
             .unwrap();
         for _ in 1..10 {
-            cached.try_read_with(|_| ()).unwrap().unwrap();
+            cached.read_with(|_| ()).unwrap().unwrap();
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(num_hits.swap(0, Ordering::Relaxed), 2)

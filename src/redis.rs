@@ -15,7 +15,7 @@ use rand::Rng;
 
 use derive_more::From;
 
-use crate::cache::{Read, CacheError, Validation, Validate, Write, OwnedIntent, ContentUpdate, Cached};
+use crate::cache::{Read, Validation, Validate, Write, ContentUpdate, Cached};
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -33,18 +33,6 @@ pub enum Error {
     Resource(Box<dyn std::error::Error>),
     NotFound(NotFoundError),
     Parse(ParseError)
-}
-
-impl Error {
-    pub fn into_cache_err(self) -> CacheError<Self> {
-        CacheError::Backend(self)
-    }
-}
-
-impl From<Error> for CacheError<Error> {
-    fn from(err: Error) -> Self {
-        CacheError::Backend(err)
-    }
 }
 
 impl std::fmt::Display for Error {
@@ -321,7 +309,7 @@ impl Store {
         &self,
         at: K,
         generation: &str
-    ) -> Result<LockGuard<T>>
+    ) -> Result<Lock<T>>
     where
         for<'b> T: Deserialize<'b>,
         K: ToRedisArgs
@@ -333,7 +321,7 @@ impl Store {
                 .arg(generation)
                 .invoke(&mut conn)?;
             resp.reverse();
-            LockGuard::<_>::try_new(self, resp)
+            Lock::<_>::try_new(resp)
         })
     }
 
@@ -345,7 +333,6 @@ impl Store {
     where
         K: ToRedisArgs + Clone
     {
-
         self.with_conn(|mut conn| {
             let seed = base64::encode(&rand::thread_rng().gen::<[u8; 32]>());
             let (generation, _): (String, u64) = ALLOC_SCRIPT
@@ -356,7 +343,7 @@ impl Store {
             Ok(StoreEntry {
                 store: self.clone(),
                 key: at,
-                generation: generation,
+                generation,
                 _phantom: PhantomData
             })
         })
@@ -418,63 +405,36 @@ impl Store {
     }
 }
 
-/// A `LockGuard` operation.
+/// A global `Lock` to write some data of type `T` in a given store
 ///
-/// `NoChange` if there wasnt a change after releasing the `LockGuard`
-/// `Change` if a change was made after releasing the `LockGuard`
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum LockGuardOp {
-    NoChange,
-    Change
-}
-
-/// A `LockGuard` for some data of type `T` in a  given `Store`
-///
-/// `LockGuard` is similar to a Mutex. You can mutate data while you hold the `LockGuard`.
-pub struct LockGuard<T> {
-    store: Store,
+/// Only one instance of a write lock on an entry may exist at any one time.
+/// However, contrary to a Mutex lock, several readers may exist concurrently
+/// to a writer.
+pub struct Lock<T> {
     id: i64,
     key: String,
     generation: String,
-    op: LockGuardOp,
-    pub data: Box<Option<T>>
+    data: Box<Option<T>>
 }
 
-impl<T> std::ops::Deref for LockGuard<T> {
+impl<T> std::ops::Deref for Lock<T> {
     type Target = Option<T>;
     fn deref(&self) -> &Option<T> {
         self.data.deref()
     }
 }
 
-impl<T> std::ops::DerefMut for LockGuard<T> {
+impl<T> std::ops::DerefMut for Lock<T> {
     fn deref_mut(&mut self) -> &mut Option<T> {
         self.data.deref_mut()
     }
 }
 
-impl<T> OwnedIntent<T> for LockGuard<T>
-where
-    T: Serialize
-{
-    type Op = Self;
-
-    fn apply(mut self) -> Self::Op {
-        self.op = LockGuardOp::Change;
-        self
-    }
-
-    fn discard(mut self) -> Self::Op {
-        self.op = LockGuardOp::NoChange;
-        self
-    }
-}
-
-impl<T> LockGuard<T>
+impl<T> Lock<T>
 where
     for<'b> T: Deserialize<'b>
 {
-    fn try_new(store: &Store, mut resp: Vec<String>) -> Result<Self> {
+    fn try_new(mut resp: Vec<String>) -> Result<Self> {
         let key = resp.pop()
             .ok_or(Error::Internal("borrow script did not yield the key"))?;
 
@@ -493,17 +453,15 @@ where
             .transpose()?;
 
         Ok(Self {
-            store: store.clone(),
             generation,
             id,
             key,
-            op: LockGuardOp::NoChange,
             data: Box::new(data)
         })
     }
 }
 
-/// Follows the entry pattern (like  std::collections::hash_map::Entry)
+/// Similar to the entry pattern (like  std::collections::hash_map::Entry)
 /// Holds a key `K` to a value `V in the context of a `Store`
 pub struct StoreEntry<K, T> {
     store: Store,
@@ -541,6 +499,8 @@ where
     }
 }
 
+use crate::cache::WriteError;
+
 impl<K, T> Write<T> for StoreEntry<K, T>
 where
     K: ToRedisArgs + Clone,
@@ -548,26 +508,30 @@ where
 {
     type Error = Error;
 
-    type Intent = LockGuard<T>;
+    type Lock = Lock<T>;
 
-    fn try_write(&self) -> Result<Self::Intent> {
+    fn write(&self) -> Result<Self::Lock> {
         self.store.get_mut(self.key.clone(), &self.generation)
     }
 
-    fn apply(
-        &self,
-        guard: LockGuard<T>
-    ) -> Result<()> {
-        match guard.op {
-            LockGuardOp::NoChange =>
-                self.store.release(&guard.key, &guard.generation, guard.id),
-            LockGuardOp::Change =>
-                self.store.set_release(&guard.key, &guard.generation, guard.id, &guard.data)
-        }
+    fn push(&self, lock: Self::Lock) ->
+        std::result::Result<(), WriteError<Self::Lock, Self::Error>>
+    {
+        self.store
+            .set_release(&lock.key, &lock.generation, lock.id, &lock.data)
+            .map_err(|error| WriteError { lock, error })
+    }
+
+    fn abort(&self, lock: Self::Lock) ->
+        std::result::Result<(), WriteError<Self::Lock, Self::Error>>
+    {
+        self.store
+            .release(&lock.key, &lock.generation, lock.id)
+            .map_err(|error| WriteError { lock, error })
     }
 }
 
-pub type CachedEntry<K, V> = Cached<StoreEntry<K, V>, u64, V>;
+pub type CachedEntry<K, V> = Cached<StoreEntry<K, V>>;
 
 #[cfg(test)]
 pub mod tests {
@@ -610,13 +574,13 @@ pub mod tests {
         let my_model = TestModel { a_hash_map: HashMap::new() };
 
         entry
-            .try_write_with(|mut guard| {
+            .write_with(|mut guard| {
                 *guard = Some(my_model.clone());
                 guard.apply()
             })
             .unwrap();
 
-        entry.try_read_with(|v| assert_eq!(*v, 0))
+        entry.read_with(|v| assert_eq!(*v, 0))
             .unwrap();
     }
 
@@ -628,8 +592,8 @@ pub mod tests {
             .unwrap()
             .into_cached()
             .unwrap();
-        entry.try_write_with(|guard| {
-            match entry.try_write_with(|guard_p| guard_p.discard()) {
+        entry.write_with(|guard| {
+            match entry.write_with(|guard_p| guard_p.discard()) {
                 Ok(_) => panic!("locking twice not allowed"),
                 _ => ()
             };

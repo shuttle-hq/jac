@@ -1,4 +1,4 @@
-
+#![feature(generic_associated_types)]
 
 #[macro_use] extern crate lazy_static;
 
@@ -6,8 +6,6 @@ pub mod cache;
 pub use cache::{
     Read,
     Write,
-    OwnedIntent,
-    CacheError,
     Validate,
     ContentUpdate,
     Validation,
