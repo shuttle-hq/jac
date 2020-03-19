@@ -1,3 +1,5 @@
+//! TODO: Some macros for impls on Arc<..>
+
 use std::marker::PhantomData;
 use std::ops::Deref;
 use std::sync::{Mutex, RwLock, Arc};
@@ -345,6 +347,47 @@ where
 
     fn refresh(&self) -> Result<(Self::Version, Option<Self::Item>), Self::Error> {
         self.strategy.refresh()
+    }
+}
+
+impl<S, T> Write<T> for Arc<S>
+where
+    S: Write<T>
+{
+    type Error = S::Error;
+
+    type Lock = S::Lock;
+
+    fn write(&self) -> Result<Self::Lock, Self::Error> {
+        self.write()
+    }
+
+    fn push(&self, lock: Self::Lock) -> Result<(), WriteError<Self::Lock, Self::Error>> {
+        self.push(lock)
+    }
+
+    fn abort(&self, lock: Self::Lock) -> Result<(), WriteError<Self::Lock, Self::Error>> {
+        self.abort(lock)
+    }
+}
+
+impl<S> Validate for Arc<S>
+where
+    S: Validate
+{
+    type Item = S::Item;
+    type Error = S::Error;
+    type Version = S::Version;
+
+    fn validate(
+        &self,
+        version: Self::Version
+    ) -> Result<Validation<Self::Version, Self::Item>, Self::Error> {
+        self.validate(version)
+    }
+
+    fn refresh(&self) -> Result<(Self::Version, Option<Self::Item>), Self::Error> {
+        self.refresh()
     }
 }
 

@@ -6,6 +6,7 @@ pub mod cache;
 pub use cache::{
     Read,
     Write,
+    WriteError,
     Validate,
     ContentUpdate,
     Validation,
