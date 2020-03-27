@@ -36,7 +36,7 @@ pub trait Validate: Sized {
     type Error: std::error::Error;
 
     /// The type to be used as the version of the controlled content
-    type Version;
+    type Version: Clone;
 
     /// `validate` content at `version`. This should be quick to do and only rarely return
     /// new content.
@@ -169,7 +169,7 @@ pub struct ValidateMap<T, F, O> {
 impl<T, F, O> Validate for ValidateMap<T, F, O>
 where
     T: Validate,
-    F: Fn(T::Item) -> O,
+    F: Fn(T::Item) -> O
 {
     type Item = O;
     type Error = T::Error;
@@ -213,11 +213,7 @@ pub struct Cached<S: Validate> {
     content: Arc<RwLock<Content<S>>>,
 }
 
-pub trait Read {
-    type Item;
-
-    type Error: std::error::Error;
-
+pub trait Read: Validate {
     fn read_with<F, O>(&self, f: F) -> Result<Option<O>, Self::Error>
     where
         F: FnOnce(&Self::Item) -> O;
@@ -260,12 +256,7 @@ where
 impl<S> Read for Cached<S>
 where
     S: Validate,
-    S::Version: Clone
 {
-    type Item = S::Item;
-
-    type Error = S::Error;
-
     fn read_with<F, O>(&self, f: F) -> Result<Option<O>, S::Error>
     where
         F: FnOnce(&S::Item) -> O
@@ -279,8 +270,31 @@ pub struct WriteError<L, E> {
     pub lock: L
 }
 
+impl<L, E> std::fmt::Debug for WriteError<L, E>
+where
+    E: std::error::Error
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <E as std::fmt::Debug>::fmt(&self.error, f)
+    }
+}
+
+impl<L, E> std::fmt::Display for WriteError<L, E>
+where
+    E: std::error::Error
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        <E as std::fmt::Display>::fmt(&self.error, f)
+    }
+}
+
+impl<L, E> std::error::Error for WriteError<L, E>
+where
+    E: std::error::Error
+{}
+
 pub trait Write<T>: Sized {
-    type Error;
+    type Error: std::error::Error;
     type Lock: DerefMut<Target = Option<T>>;
 
     fn write(&self) -> Result<Self::Lock, Self::Error>;
@@ -350,6 +364,18 @@ where
     }
 }
 
+impl<S> Read for Arc<S>
+where
+    S: Read
+{
+    fn read_with<F, O>(&self, f: F) -> Result<Option<O>, S::Error>
+    where
+        F: FnOnce(&S::Item) -> O
+    {
+        <S as Read>::read_with(self, f)
+    }
+}
+
 impl<S, T> Write<T> for Arc<S>
 where
     S: Write<T>
@@ -359,15 +385,15 @@ where
     type Lock = S::Lock;
 
     fn write(&self) -> Result<Self::Lock, Self::Error> {
-        self.write()
+        <S as Write<T>>::write(self.as_ref())
     }
 
     fn push(&self, lock: Self::Lock) -> Result<(), WriteError<Self::Lock, Self::Error>> {
-        self.push(lock)
+        <S as Write<T>>::push(self.as_ref(), lock)
     }
 
     fn abort(&self, lock: Self::Lock) -> Result<(), WriteError<Self::Lock, Self::Error>> {
-        self.abort(lock)
+        <S as Write<T>>::abort(self.as_ref(), lock)
     }
 }
 
@@ -383,13 +409,22 @@ where
         &self,
         version: Self::Version
     ) -> Result<Validation<Self::Version, Self::Item>, Self::Error> {
-        self.validate(version)
+        <S as Validate>::validate(self.as_ref(), version)
     }
 
     fn refresh(&self) -> Result<(Self::Version, Option<Self::Item>), Self::Error> {
-        self.refresh()
+        <S as Validate>::refresh(self.as_ref())
     }
 }
+
+pub trait ReadWrite
+where
+    Self: Read + Write<<Self as Validate>::Item, Error = <Self as Validate>::Error> {}
+
+impl<T> ReadWrite for T
+where
+    Self: Read + Write<<Self as Validate>::Item, Error = <Self as Validate>::Error>
+{}
 
 #[cfg(test)]
 mod tests {

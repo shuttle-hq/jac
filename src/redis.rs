@@ -9,7 +9,7 @@ use std::str::FromStr;
 use serde::{Serialize, Deserialize};
 
 use redis::{IntoConnectionInfo, Commands};
-pub use redis::{ToRedisArgs, FromRedisValue, RedisWrite};
+pub use redis::{self, ToRedisArgs, FromRedisValue, RedisWrite};
 
 use rand::Rng;
 
@@ -181,35 +181,33 @@ lazy_static! {
 }
 
 /// Connection parameters for redis.
-pub struct RedisOpt {
+pub struct StoreBuilder {
     /// redis instance url (defaults to redis://localhost:6379)
     url: String,
     /// redis password
     password: Option<String>
 }
 
-impl RedisOpt {
-    pub fn new(url: &str, password: Option<&str>) -> Self {
-        Self {
-            url: url.to_string(),
-            password: password.map(|p| p.to_string())
-        }
+impl StoreBuilder {
+    pub fn url(mut self, url: &str) -> Self {
+        self.url = url.to_owned();
+        self
     }
-    /// Get a client using the provided `url` & `password`
-    /// (This is usually used to get a `Store`)
-    pub fn to_client(&self) -> Result<redis::Client> {
-        let mut conn_info = self.url.clone().into_connection_info()?;
-        conn_info.passwd = self.password.clone();
-        Ok(redis::Client::open(conn_info)?)
+
+    pub fn password(mut self, password: &str) -> Self {
+        self.password = Some(password.to_owned());
+        self
     }
 
     /// Get a `Store` with redis as the underlying
-    pub fn build(self) -> Store {
-        Store::new(&self)
+    pub fn build(self) -> Result<Store> {
+        let mut conn_info = self.url.into_connection_info()?;
+        conn_info.passwd = self.password;
+        Ok(Store(Arc::new(redis::Client::open(conn_info)?)))
     }
 }
 
-impl Default for RedisOpt {
+impl Default for StoreBuilder {
     fn default() -> Self {
         Self {
             url: "redis://localhost:6379".to_string(),
@@ -224,17 +222,13 @@ pub struct Store(Arc<redis::Client>);
 
 impl Default for Store {
     fn default() -> Self {
-        Store::new(&RedisOpt::default())
+        StoreBuilder::default().build().unwrap()
     }
 }
 
 impl Store {
-    /// Get a new `Store` using the `RedisOpt` options
-    ///
-    /// # Panics
-    /// if the redis configuration specified in `RedisOpt` is invalid
-    pub fn new(opt: &RedisOpt) -> Self {
-        Self(Arc::new(opt.to_client().expect("invalid redis config")))
+    pub fn builder() -> StoreBuilder {
+        StoreBuilder::default()
     }
 
     /// Supply a redis connection to the `Store`
@@ -246,7 +240,10 @@ impl Store {
         f(conn)
     }
 
-    pub fn list<RV: FromRedisValue>(&self, pattern: &str) -> Result<impl Iterator<Item = RV>>
+    pub fn list<R, RV>(&self, pattern: R) -> Result<impl Iterator<Item = RV>>
+    where
+        R: ToRedisArgs,
+        RV: FromRedisValue
     {
         self.with_conn(|mut conn| {
             let buf: Vec<_> = conn.scan_match(pattern)?
@@ -541,7 +538,7 @@ pub mod tests {
     use rand::prelude::*;
 
     fn mk_store() -> Store {
-        RedisOpt::new("redis://localhost:6379", None)
+        StoreBuilder::new("redis://localhost:6379", None)
             .build()
     }
 
