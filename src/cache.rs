@@ -6,6 +6,7 @@ use std::sync::{Mutex, RwLock, Arc};
 use std::time::{Duration, Instant};
 use std::ops::DerefMut;
 use std::sync::RwLockReadGuard;
+use std::convert::Infallible;
 
 /// A wrapper around content returned as part of an validation
 /// strategy.
@@ -83,13 +84,12 @@ pub trait Validate: Sized {
 }
 
 #[derive(Debug)]
-pub struct Versioned<V, T, E> {
+pub struct Versioned<V, T> {
     item: Option<T>,
-    version: V,
-    error: PhantomData<E>
+    version: V
 }
 
-impl<V, T, E> Clone for Versioned<V, T, E>
+impl<V, T> Clone for Versioned<V, T>
 where
     V: Clone,
     T: Clone
@@ -98,19 +98,17 @@ where
         Self {
             item: self.item.clone(),
             version: self.version.clone(),
-            error: PhantomData
         }
     }
 }
 
-impl<V, T, E> Validate for Versioned<V, T, E>
+impl<V, T> Validate for Versioned<V, T>
 where
     T: Clone,
-    E: std::error::Error,
     V: Clone + Eq
 {
     type Item = T;
-    type Error = E;
+    type Error = Infallible;
     type Version = V;
     fn validate(
         &self,
@@ -137,10 +135,9 @@ where
     }
 }
 
-impl<V, T, E> Read for Versioned<V, T, E>
+impl<V, T> Read for Versioned<V, T>
 where
     T: Clone,
-    E: std::error::Error,
     V: Clone + Eq
 {
     fn read_with<F, O>(&self, f: F) -> Result<Option<O>, Self::Error>
@@ -152,34 +149,32 @@ where
     }
 }
 
-pub type Constant<T, E> = Versioned<(), T, E>;
+pub type Constant<T> = Versioned<(), T>;
 
-impl<T, E> Versioned<(), T, E>
+impl<T> Versioned<(), T>
 where
     T: Clone,
-    E: std::error::Error
 {
     pub fn from_value(value: T) -> Self {
-        Self { item: Some(value), version: (), error: PhantomData }
+        Self { item: Some(value), version: () }
     }
 }
 
-impl<V, T, E> Versioned<V, T, E>
+impl<V, T> Versioned<V, T>
 where
     T: Clone,
-    E: std::error::Error,
     V: Clone + Eq
 {
     pub fn from_value_at_version(value: T, version: V) -> Self {
-        Self { item: Some(value), version, error: PhantomData }
+        Self { item: Some(value), version }
     }
 
     pub fn none_at_version(version: V) -> Self {
-        Self { item: None, version, error: PhantomData }
+        Self { item: None, version }
     }
 }
 
-impl<V, T, E> Versioned<V, T, E> {
+impl<V, T> Versioned<V, T> {
     pub fn read(&self) -> Option<&T> {
         self.item.as_ref()
     }
