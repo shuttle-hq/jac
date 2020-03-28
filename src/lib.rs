@@ -13,7 +13,8 @@ pub use cache::{
     Validation,
     ValidateMap,
     Content,
-    Cached
+    Versioned,
+    Constant
 };
 
 #[cfg(feature = "redis-backend")]

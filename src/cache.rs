@@ -82,6 +82,109 @@ pub trait Validate: Sized {
     }
 }
 
+#[derive(Debug)]
+pub struct Versioned<V, T, E> {
+    item: Option<T>,
+    version: V,
+    error: PhantomData<E>
+}
+
+impl<V, T, E> Clone for Versioned<V, T, E>
+where
+    V: Clone,
+    T: Clone
+{
+    fn clone(&self) -> Self {
+        Self {
+            item: self.item.clone(),
+            version: self.version.clone(),
+            error: PhantomData
+        }
+    }
+}
+
+impl<V, T, E> Validate for Versioned<V, T, E>
+where
+    T: Clone,
+    E: std::error::Error,
+    V: Clone + Eq
+{
+    type Item = T;
+    type Error = E;
+    type Version = V;
+    fn validate(
+        &self,
+        version: Self::Version
+    ) -> Result<Validation<Self::Version, Self::Item>, Self::Error> {
+        let res = if self.version != version {
+            Validation {
+                version: self.version.clone(),
+                update: match self.item.as_ref() {
+                    Some(item) => ContentUpdate::Value(item.clone()),
+                    None => ContentUpdate::Removed
+                }
+            }
+        } else {
+            Validation {
+                version,
+                update: ContentUpdate::Unchanged
+            }
+        };
+        Ok(res)
+    }
+    fn refresh(&self) -> Result<(Self::Version, Option<Self::Item>), Self::Error> {
+        Ok((self.version.clone(), self.item.clone()))
+    }
+}
+
+impl<V, T, E> Read for Versioned<V, T, E>
+where
+    T: Clone,
+    E: std::error::Error,
+    V: Clone + Eq
+{
+    fn read_with<F, O>(&self, f: F) -> Result<Option<O>, Self::Error>
+    where
+        F: FnOnce(&Self::Item) -> O
+    {
+        let res = self.item.as_ref().map(f);
+        Ok(res)
+    }
+}
+
+pub type Constant<T, E> = Versioned<(), T, E>;
+
+impl<T, E> Versioned<(), T, E>
+where
+    T: Clone,
+    E: std::error::Error
+{
+    pub fn from_value(value: T) -> Self {
+        Self { item: Some(value), version: (), error: PhantomData }
+    }
+}
+
+impl<V, T, E> Versioned<V, T, E>
+where
+    T: Clone,
+    E: std::error::Error,
+    V: Clone + Eq
+{
+    pub fn from_value_at_version(value: T, version: V) -> Self {
+        Self { item: Some(value), version, error: PhantomData }
+    }
+
+    pub fn none_at_version(version: V) -> Self {
+        Self { item: None, version, error: PhantomData }
+    }
+}
+
+impl<V, T, E> Versioned<V, T, E> {
+    pub fn read(&self) -> Option<&T> {
+        self.item.as_ref()
+    }
+}
+
 /// a TTL wrapper around a validation strategy `S`
 pub struct TimeToLive<S: Validate> {
     inner: S,
