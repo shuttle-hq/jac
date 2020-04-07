@@ -320,6 +320,17 @@ pub trait Read: Validate {
 impl<S> Cached<S>
 where
     S: Validate,
+    S::Version: Clone,
+    S::Item: Clone
+{
+    pub fn clone_inner(&self) -> Result<Option<S::Item>, S::Error> {
+        self.read_with(|inner| inner.clone())
+    }
+}
+
+impl<S> Cached<S>
+where
+    S: Validate,
     S::Version: Clone
 {
     fn validate(&self) -> Result<RwLockReadGuard<'_, Content<S>>, S::Error> {

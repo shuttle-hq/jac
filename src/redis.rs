@@ -30,7 +30,6 @@ pub enum Error {
     Redis(redis::RedisError),
     Internal(&'static str),
     Serde(serde_json::Error),
-    Resource(Box<dyn std::error::Error>),
     NotFound(NotFoundError),
     Parse(ParseError)
 }
@@ -46,9 +45,6 @@ impl std::fmt::Display for Error {
             },
             Self::Serde(se) => {
                 write!(f, "serde: {}", se)
-            },
-            Self::Resource(re) => {
-                write!(f, "resource: {}", re)
             },
             Self::NotFound(NotFoundError(s)) => {
                 write!(f, "not found: {}", s)
