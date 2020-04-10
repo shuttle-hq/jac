@@ -334,23 +334,31 @@ where
     S::Version: Clone
 {
     fn validate(&self) -> Result<RwLockReadGuard<'_, Content<S>>, S::Error> {
+        trace!("validating");
         let res = {
             let content = self.content.read().unwrap();
             let res = self.strategy.validate(content.version.clone())?;
             match &res.update {
-                ContentUpdate::Unchanged => return Ok(content),
+                ContentUpdate::Unchanged => {
+                    trace!("ContentUpdate::Unchanged");
+                    return Ok(content)
+                },
                 _ => Ok(res)
             }
-        }?; 
+        }?;
 
         match res.update {
-            ContentUpdate::Unchanged => {},
+            ContentUpdate::Unchanged => {
+                trace!("ContentUpdate::Unchanged");
+            }
             ContentUpdate::Removed => {
+                trace!("ContentUpdate::Removed");
                 let mut content = self.content.write().unwrap();
                 content.version = res.version;
                 content.data = None;
             },
             ContentUpdate::Value(v) => {
+                trace!("ContentUpdate::Value(..)");
                 let mut content = self.content.write().unwrap();
                 content.version = res.version;
                 content.data = Some(v);

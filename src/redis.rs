@@ -94,7 +94,7 @@ lazy_static! {
           else \
             local version = redis.call('HGET', KEYS[1], 'version') \
             local data = redis.call('HGET', KEYS[1], 'data') \
-            if ARGV[2] >= version then \
+            if tonumber(ARGV[2]) >= tonumber(version) then \
               return {generation, version, 'unchanged'} \
             else \
               if data then \
@@ -475,7 +475,18 @@ where
     type Version = u64;
 
     fn validate(&self, version: u64) -> Result<Validation<u64, Self::Item>> {
-        self.store.validate(self.key.clone(), &self.generation, version)
+        trace!("redis validate at version={}", version);
+        let validation = self.store.validate(self.key.clone(), &self.generation, version)?;
+        trace!(
+            "redis source said version={} and `{}`",
+            validation.version,
+            match validation.update {
+                ContentUpdate::Unchanged => "unchanged",
+                ContentUpdate::Removed => "removed",
+                ContentUpdate::Value(..) => "new value"
+            }
+        );
+        Ok(validation)
     }
 
     fn refresh(&self) -> Result<(u64, Option<Self::Item>)> {
@@ -484,6 +495,7 @@ where
             &self.generation,
             0
         )?;
+        trace!("redis refresh version={}", version);
         match update {
             ContentUpdate::Value(v) => Ok((version, Some(v))),
             ContentUpdate::Removed => Ok((version, None)),
@@ -510,6 +522,7 @@ where
     fn push(&self, lock: Self::Lock) ->
         std::result::Result<(), WriteError<Self::Lock, Self::Error>>
     {
+        trace!("set_releasing lock={} at gen={} and id={}", lock.key, lock.generation, lock.id);
         self.store
             .set_release(&lock.key, &lock.generation, lock.id, &lock.data)
             .map_err(|error| WriteError { lock, error })
